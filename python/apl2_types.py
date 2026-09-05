@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import dataclass
 from decimal import Decimal
 from functools import reduce
 from operator import mul
 from typing import Any, Iterable, Iterator, List, Sequence, Tuple
+
+from apl2_context import current_context
 
 
 def shape_product(shape: Sequence[int]) -> int:
@@ -30,8 +33,12 @@ def iter_indices(shape: Sequence[int]) -> Iterator[Tuple[int, ...]]:
 
 
 def linear_index(shape: Sequence[int], coordinates: Sequence[int]) -> int:
+    if len(shape) != len(coordinates):
+        raise IndexError("Coordinate rank does not match array rank")
     index = 0
     for size, coordinate in zip(shape, coordinates):
+        if coordinate < 0 or coordinate >= size:
+            raise IndexError("Array index out of bounds")
         index = index * size + coordinate
     return index
 
@@ -63,7 +70,13 @@ class APLType:
         return copy.deepcopy(self)
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, APLType) and self.to_python() == other.to_python()
+        if not isinstance(other, APLType):
+            return False
+        return _values_equal(
+            self.to_python(),
+            other.to_python(),
+            current_context().comparison_tolerance,
+        )
 
 
 @dataclass
@@ -195,8 +208,12 @@ class ArrayType(APLType):
             ]
         return ArrayType(reshaped, resolved_shape)
 
-    def get(self, coordinates: Sequence[int]) -> APLType:
-        return self.elements[linear_index(self.shape, coordinates)]
+    def get(self, coordinates: Sequence[int], apply_index_origin: bool = True) -> APLType:
+        adjusted = tuple(int(coordinate) for coordinate in coordinates)
+        if apply_index_origin:
+            origin = current_context().index_origin
+            adjusted = tuple(coordinate - origin for coordinate in adjusted)
+        return self.elements[linear_index(self.shape, adjusted)]
 
     def to_python(self) -> Any:
         if self.rank == 0:
@@ -216,7 +233,7 @@ class ArrayType(APLType):
             old_index = [0] * self.rank
             for new_axis, old_axis in enumerate(axes):
                 old_index[old_axis] = new_index[new_axis]
-            result.append(self.get(tuple(old_index)).deep_copy())
+            result.append(self.get(tuple(old_index), apply_index_origin=False).deep_copy())
         return ArrayType(result, new_shape)
 
     def to_boolean(self) -> bool:
@@ -231,6 +248,30 @@ def _nested_python(elements: Sequence[APLType], shape: Sequence[int]) -> Any:
         _nested_python(elements[start:start + cell_size], shape[1:])
         for start in range(0, len(elements), cell_size)
     ]
+
+
+def _values_equal(left: Any, right: Any, tolerance: float) -> bool:
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(
+            _values_equal(left_item, right_item, tolerance)
+            for left_item, right_item in zip(left, right)
+        )
+    if isinstance(left, Decimal):
+        left = float(left)
+    if isinstance(right, Decimal):
+        right = float(right)
+    if isinstance(left, complex) or isinstance(right, complex):
+        left_complex = complex(left)
+        right_complex = complex(right)
+        return math.isclose(left_complex.real, right_complex.real, rel_tol=0.0, abs_tol=tolerance) and math.isclose(
+            left_complex.imag,
+            right_complex.imag,
+            rel_tol=0.0,
+            abs_tol=tolerance,
+        )
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        return math.isclose(float(left), float(right), rel_tol=0.0, abs_tol=tolerance)
+    return left == right
 
 
 def as_apl_value(value: Any) -> APLType:
@@ -251,4 +292,3 @@ def as_apl_value(value: Any) -> APLType:
     if isinstance(value, (list, tuple)):
         return ArrayType(value)
     raise TypeError(f"Unsupported APL value: {type(value)!r}")
-

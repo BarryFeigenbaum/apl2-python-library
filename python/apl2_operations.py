@@ -8,6 +8,7 @@ from bisect import bisect_left
 from decimal import Decimal
 from typing import Callable
 
+from apl2_context import current_context
 from apl2_types import (
     APLType,
     ArrayType,
@@ -259,7 +260,7 @@ class MathOperations:
 
     @staticmethod
     def equal(left, right):
-        return MathOperations._binary(left, right, lambda l, r: BooleanType(l.to_python() == r.to_python()))
+        return MathOperations._binary(left, right, lambda l, r: BooleanType(MathOperations._equals(l, r)))
 
     @staticmethod
     def not_equal(left, right):
@@ -336,7 +337,12 @@ class MathOperations:
 
     @staticmethod
     def format(value):
-        return StringType(str(as_apl_value(value).to_python()))
+        context = current_context()
+        apl_value = as_apl_value(value)
+        rendered = MathOperations._format_value(apl_value, context.print_precision)
+        if isinstance(apl_value, ArrayType) and len(rendered) > context.print_width:
+            rendered = rendered[: max(0, context.print_width - 3)] + "..."
+        return StringType(rendered)
 
     @staticmethod
     def format_with_pattern(pattern, value):
@@ -358,7 +364,8 @@ class MathOperations:
         count = int(MathOperations._numeric_value(as_apl_value(value)))
         if count < 0:
             raise ValueError("Iota requires a non-negative integer")
-        return ArrayType([IntegerType(index) for index in range(count)], (count,))
+        origin = current_context().index_origin
+        return ArrayType([IntegerType(index + origin) for index in range(count)], (count,))
 
     @staticmethod
     def index_of(left, right):
@@ -371,9 +378,9 @@ class MathOperations:
         def find(value):
             python_value = value.to_python()
             try:
-                return IntegerType(lookup.index(python_value))
+                return IntegerType(lookup.index(python_value) + current_context().index_origin)
             except ValueError:
-                return IntegerType(len(lookup))
+                return IntegerType(len(lookup) + current_context().index_origin)
 
         if isinstance(right_value, ArrayType):
             return ArrayType([find(element) for element in right_value.elements], right_value.shape)
@@ -388,8 +395,44 @@ class MathOperations:
         sorted_values = [float(MathOperations._numeric_value(element)) for element in left_array.elements]
 
         def locate(value):
-            return IntegerType(bisect_left(sorted_values, float(MathOperations._numeric_value(value))))
+            return IntegerType(bisect_left(sorted_values, float(MathOperations._numeric_value(value))) + current_context().index_origin)
 
         if isinstance(right_value, ArrayType):
             return ArrayType([locate(element) for element in right_value.elements], right_value.shape)
         return locate(right_value)
+
+    @staticmethod
+    def _equals(left: APLType, right: APLType) -> bool:
+        tolerance = current_context().comparison_tolerance
+        left_value = left.to_python()
+        right_value = right.to_python()
+        if isinstance(left_value, Decimal):
+            left_value = float(left_value)
+        if isinstance(right_value, Decimal):
+            right_value = float(right_value)
+        if isinstance(left_value, complex) or isinstance(right_value, complex):
+            left_complex = complex(left_value)
+            right_complex = complex(right_value)
+            return math.isclose(left_complex.real, right_complex.real, rel_tol=0.0, abs_tol=tolerance) and math.isclose(
+                left_complex.imag,
+                right_complex.imag,
+                rel_tol=0.0,
+                abs_tol=tolerance,
+            )
+        if isinstance(left_value, (int, float)) and isinstance(right_value, (int, float)):
+            return math.isclose(float(left_value), float(right_value), rel_tol=0.0, abs_tol=tolerance)
+        return left_value == right_value
+
+    @staticmethod
+    def _format_value(value: APLType, precision: int) -> str:
+        if isinstance(value, ArrayType):
+            return "[" + ", ".join(MathOperations._format_value(item, precision) for item in value.elements) + "]"
+        if isinstance(value, BigDecimalType):
+            return format(value.value, f".{precision}g")
+        if isinstance(value, FloatingPointType):
+            return format(value.value, f".{precision}g")
+        if isinstance(value, ComplexType):
+            real = format(value.real, f".{precision}g")
+            imag = format(value.imaginary, f".{precision}g")
+            return f"({real}+{imag}j)"
+        return str(value.to_python())
