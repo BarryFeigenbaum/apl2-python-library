@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, Sequence
 
+from apl2_context import current_context as array_context
 from apl2_types import APLType, ArrayType, BooleanType, IntegerType, as_apl_value, iter_indices, normalize_axis
 from apl2_operations import MathOperations
 
@@ -85,7 +86,7 @@ class ArrayOperations:
             source_index = list(new_index)
             source_index[resolved_axis] = start + new_index[resolved_axis]
             if 0 <= source_index[resolved_axis] < array.shape[resolved_axis]:
-                result.append(array.get(tuple(source_index)).deep_copy())
+                result.append(array.get(tuple(source_index), apply_index_origin=False).deep_copy())
             else:
                 result.append(filler.deep_copy())
         return ArrayType(result, tuple(new_shape))
@@ -97,7 +98,7 @@ class ArrayOperations:
         result = []
         for new_index in iter_indices(new_shape):
             source_index = new_index[:resolved_axis] + (0,) + new_index[resolved_axis:]
-            result.append(array.get(source_index).deep_copy())
+            result.append(array.get(source_index, apply_index_origin=False).deep_copy())
         return result[0] if not new_shape else ArrayType(result, new_shape)
 
     @staticmethod
@@ -113,7 +114,7 @@ class ArrayOperations:
         for new_index in iter_indices(tuple(new_shape)):
             source_index = list(new_index)
             source_index[resolved_axis] += offset
-            result.append(array.get(tuple(source_index)).deep_copy())
+            result.append(array.get(tuple(source_index), apply_index_origin=False).deep_copy())
         return ArrayType(result, tuple(new_shape))
 
     @staticmethod
@@ -133,11 +134,11 @@ class ArrayOperations:
         result = []
         for new_index in iter_indices(tuple(new_shape)):
             if new_index[resolved_axis] < left.shape[resolved_axis]:
-                result.append(left.get(new_index).deep_copy())
+                result.append(left.get(new_index, apply_index_origin=False).deep_copy())
             else:
                 source_index = list(new_index)
                 source_index[resolved_axis] -= left.shape[resolved_axis]
-                result.append(right.get(tuple(source_index)).deep_copy())
+                result.append(right.get(tuple(source_index), apply_index_origin=False).deep_copy())
         return ArrayType(result, tuple(new_shape))
 
     concatenate = catenate
@@ -171,7 +172,7 @@ class ArrayOperations:
         result = []
         for output_index in iter_indices(output_shape):
             slice_values = [
-                array.get(output_index[:resolved_axis] + (axis_index,) + output_index[resolved_axis:])
+                array.get(output_index[:resolved_axis] + (axis_index,) + output_index[resolved_axis:], apply_index_origin=False)
                 for axis_index in range(array.shape[resolved_axis])
             ]
             accumulator = slice_values[0].deep_copy()
@@ -189,7 +190,7 @@ class ArrayOperations:
             accumulator = None
             for axis_index in range(array.shape[resolved_axis]):
                 full_index = output_index[:resolved_axis] + (axis_index,) + output_index[resolved_axis:]
-                value = array.get(full_index)
+                value = array.get(full_index, apply_index_origin=False)
                 accumulator = value.deep_copy() if accumulator is None else function(accumulator, value)
                 values[full_index] = accumulator.deep_copy()
         return ArrayType([values[index] for index in iter_indices(array.shape)], array.shape)
@@ -217,7 +218,8 @@ class ArrayOperations:
 
     @staticmethod
     def indices_where(array: ArrayType) -> ArrayType:
-        indices = [IntegerType(index) for index, value in enumerate(array.elements) if value.to_boolean()]
+        origin = array_context().index_origin
+        indices = [IntegerType(index + origin) for index, value in enumerate(array.elements) if value.to_boolean()]
         return ArrayType(indices, (len(indices),))
 
     @staticmethod
@@ -250,7 +252,8 @@ class ArrayOperations:
     def pick(index: APLType, array: ArrayType) -> APLType:
         index_value = as_apl_value(index)
         if isinstance(index_value, IntegerType):
-            return array.elements[index_value.value].deep_copy()
+            origin = array_context().index_origin
+            return array.elements[index_value.value - origin].deep_copy()
         if isinstance(index_value, ArrayType):
             coordinates = tuple(int(element.to_numeric()) for element in index_value.elements)
             return array.get(coordinates).deep_copy()
@@ -278,7 +281,7 @@ class ArrayOperations:
         for index in iter_indices(array.shape):
             source_index = list(index)
             source_index[axis] = coordinate_map(index[axis], array.shape[axis])
-            result.append(array.get(tuple(source_index)).deep_copy())
+            result.append(array.get(tuple(source_index), apply_index_origin=False).deep_copy())
         return ArrayType(result, array.shape)
 
     @staticmethod
@@ -288,7 +291,7 @@ class ArrayOperations:
         output_shape = array.shape[:resolved_axis] + array.shape[resolved_axis + 1:]
         for output_index in iter_indices(output_shape):
             slice_values = [
-                array.get(output_index[:resolved_axis] + (axis_index,) + output_index[resolved_axis:])
+                array.get(output_index[:resolved_axis] + (axis_index,) + output_index[resolved_axis:], apply_index_origin=False)
                 for axis_index in range(array.shape[resolved_axis])
             ]
             order = sorted(
@@ -298,7 +301,7 @@ class ArrayOperations:
             )
             for axis_index, source in enumerate(order):
                 full_index = output_index[:resolved_axis] + (axis_index,) + output_index[resolved_axis:]
-                values[full_index] = IntegerType(source)
+                values[full_index] = IntegerType(source + array_context().index_origin)
         return ArrayType([values[index] for index in iter_indices(array.shape)], array.shape)
 
     @staticmethod
@@ -312,7 +315,7 @@ class ArrayOperations:
         for output_index in iter_indices(output_shape):
             for axis_index in range(keys.shape[resolved_axis]):
                 grade_index = output_index[:resolved_axis] + (axis_index,) + output_index[resolved_axis:]
-                source_axis = int(grade.get(grade_index).to_numeric())
+                source_axis = int(grade.get(grade_index, apply_index_origin=False).to_numeric()) - array_context().index_origin
                 source_index = output_index[:resolved_axis] + (source_axis,) + output_index[resolved_axis:]
-                sorted_values[grade_index] = values.get(source_index).deep_copy()
+                sorted_values[grade_index] = values.get(source_index, apply_index_origin=False).deep_copy()
         return ArrayType([sorted_values[index] for index in iter_indices(values.shape)], values.shape)
